@@ -40,13 +40,6 @@ public final class SFlowValve extends ValveBase {
    private static String configFile = DEFAULT_CONFIG_FILE;
    private static long lastConfigFileChange = 0L;
 
-   private static int subAgentID = 8080;
-   private static int dsClass = 3; 
-   private static int dsIndex = 8080;
-   private static int agentSequenceNo = 0;
-   private static int counterSequenceNo = 0;
-   private static int flowSequenceNo = 0;
-   private static long agentStartTime = 0L;
    private static long pollingInterval = 0L;
    private static byte[] agentAddress = null;
    private static ArrayList<InetSocketAddress> destinations;
@@ -54,7 +47,7 @@ public final class SFlowValve extends ValveBase {
    private static DatagramSocket socket = null;
 
    // update configuration
-   private static void updateConfig() {
+   private static synchronized void updateConfig() {
       File file = new File(configFile);
       if(!file.exists()) return;
 
@@ -163,6 +156,14 @@ public final class SFlowValve extends ValveBase {
      return (int) x;
    }
 
+   private static final int dsClass = 3;
+   private int dsIndex = -1;
+   private int agentSequenceNo = 0;
+   private int counterSequenceNo = 0;
+   private int flowSequenceNo = 0;
+   private long agentStartTime = 0L;
+
+
    // sFlow state
    AtomicInteger sample_pool      = new AtomicInteger();
    AtomicInteger sample_count     = new AtomicInteger();
@@ -171,7 +172,7 @@ public final class SFlowValve extends ValveBase {
    // sampling
    static int sampling_rate      = 0;
    static int sampling_threshold = 0;
-   static int sampling_nbits = 0;
+   static int sampling_nbits     = 0;
 
    private static void setSamplingRate(int rate) {
       if(rate <= 0) {
@@ -250,6 +251,8 @@ public final class SFlowValve extends ValveBase {
       int local_port = request.getLocalPort();
       int remote_port = request.getRemotePort(); 
       String protocol = request.getProtocol();
+
+      if(dsIndex == -1) dsIndex = local_port;
 
       int socketType = 0;
       int socketLen = 0;
@@ -431,7 +434,7 @@ public final class SFlowValve extends ValveBase {
       i = xdrInt(buf,i,5);
       i = xdrInt(buf,i,addrType);
       i = xdrBytes(buf,i,agentAddress,pad(agentAddress.length)); 
-      i = xdrInt(buf,i,subAgentID);
+      i = xdrInt(buf,i,dsIndex);
       i = xdrInt(buf,i,agentSequenceNo++);
       i = xdrInt(buf,i,(int)(now - agentStartTime));
 
@@ -483,6 +486,7 @@ public final class SFlowValve extends ValveBase {
 
    private void pollCounters(long now) {
       if(agentAddress == null) return;
+      if(dsIndex == -1) return;
 
       byte[] buf = new byte[header_len + 1 + counter_data_len];
 
