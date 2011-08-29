@@ -40,6 +40,12 @@ public final class SFlowValve extends ValveBase {
    private static String configFile = DEFAULT_CONFIG_FILE;
    private static long lastConfigFileChange = 0L;
 
+   private static final byte[] EMPTY = {}; 
+ 
+   private static final int DEFAULT_SFLOW_PORT      = 6343; 
+   private static final int DS_CLASS_PHYSICAL       = 2;
+   private static final int DS_CLASS_LOGICAL        = 3;
+
    private static long pollingInterval = 0L;
    private static byte[] agentAddress = null;
    private static ArrayList<InetSocketAddress> destinations;
@@ -137,7 +143,7 @@ public final class SFlowValve extends ValveBase {
            try { addr = InetAddress.getByName(parts[0]); }
            catch(UnknownHostException e) {}
            if(addr != null) {
-              int port = 6343;
+              int port = DEFAULT_SFLOW_PORT;
               if(parts.length == 2) {
                 try { port = Integer.parseInt(parts[1]); }
                 catch(NumberFormatException e) {};
@@ -168,7 +174,6 @@ public final class SFlowValve extends ValveBase {
      return (int) x;
    }
 
-   private static final int dsClass = 3;
    private int dsIndex = -1;
    private int agentSequenceNo = 0;
    private int counterSequenceNo = 0;
@@ -253,8 +258,6 @@ public final class SFlowValve extends ValveBase {
      }
    }
 
-   private static final byte[] EMPTY = {};
-
    int max_flow_data_len = 1024;
    private int xdrFlowSample(byte[] buf, int offset, Request request, Response response, String method, int status,int duration) {
 
@@ -265,14 +268,11 @@ public final class SFlowValve extends ValveBase {
       String protocol = request.getProtocol();
 
       int socketType = 0;
-      int socketLen = 0;
       if(local_addr.length == 4 && remote_addr.length == 4) {
          socketType = 4;
-         socketLen = 20;
       }
       else if(local_addr.length == 16 && remote_addr.length == 16) {
          socketType = 6;
-         socketLen = 44;
       }
 
       long bytes = response.getBytesWritten(true);
@@ -294,13 +294,15 @@ public final class SFlowValve extends ValveBase {
       int sample_len_idx = i;
       i += 4;
       i = xdrInt(buf,i,flowSequenceNo++);
-      i = xdrDatasource(buf,i,dsClass,dsIndex);
+      i = xdrDatasource(buf,i,DS_CLASS_LOGICAL,dsIndex);
       i = xdrInt(buf,i,sampling_rate);
       i = xdrInt(buf,i,sample_pool.get());
       i = xdrInt(buf,i,0);          // drops
       i = xdrInt(buf,i,0);          // input interface
       i = xdrInt(buf,i,0x3FFFFFFF); // output interface
-      i = xdrInt(buf,i,socketType == 0 ? 1 : 2);  // number of flow records
+      int sample_nrecs_idx = i;
+      int sample_nrecs = 0;
+      i += 4;
 
       i = xdrInt(buf,i,2201);      
       int opaque_len_idx = i;
@@ -333,20 +335,25 @@ public final class SFlowValve extends ValveBase {
       i = xdrInt(buf,i,duration);
       i = xdrInt(buf,i,status);
       xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+      sample_nrecs ++;
 
       // socket struct
       if(socketType != 0) {
          i = xdrInt(buf,i,socketType == 4 ? 2100 : 2101);
-         i = xdrInt(buf,i,socketLen);
-         i = xdrInt(buf,i,6);
+         opaque_len_idx = i;
+         i += 4;
+         i = xdrInt(buf,i,6);  // protocol = TCP
          i = xdrBytes(buf,i,local_addr);
          i = xdrBytes(buf,i,remote_addr);
          i = xdrInt(buf,i,local_port); 
          i = xdrInt(buf,i,remote_port);
+         xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+         sample_nrecs++;
       }
 
       // fill in sample length and record count
       xdrInt(buf,sample_len_idx, i - sample_len_idx - 4);
+      xdrInt(buf,sample_nrecs_idx, sample_nrecs);
 
       return i;       
    }
@@ -469,7 +476,7 @@ public final class SFlowValve extends ValveBase {
       return i;
   }
 
-   static final int counter_data_len = 88;
+   static final int max_counter_data_len = 108;
    // opaque = counter_data; enterprise = 0; format = 2201
    private int xdrCounterSample(byte[] buf, int offset) {
       int i = offset;
@@ -479,8 +486,11 @@ public final class SFlowValve extends ValveBase {
       int sample_len_idx = i;
       i += 4;
       i = xdrInt(buf,i,counterSequenceNo++);
-      i = xdrDatasource(buf,i,dsClass,dsIndex);
-      i = xdrInt(buf,i,1);  // counter records
+      i = xdrDatasource(buf,i,DS_CLASS_LOGICAL,dsIndex);
+      int sample_nrecs_idx = i;
+      int sample_nrecs = 0;
+      i += 4;
+
       i = xdrInt(buf,i,2201); // data format
       int opaque_len_idx = i;
       i += 4;
@@ -500,9 +510,22 @@ public final class SFlowValve extends ValveBase {
       i = xdrInt(buf,i,status_5XX_count.get());
       i = xdrInt(buf,i,status_other_count.get());
       xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+      sample_nrecs++;
 
-      // fill in sample length
+      if(parentDsIndex > 0) {
+        // host_parent
+        i = xdrInt(buf,i,2002);
+        opaque_len_idx = i;
+        i += 4;
+        i = xdrInt(buf,i,DS_CLASS_PHYSICAL);
+        i = xdrInt(buf,i,parentDsIndex);
+        xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+        sample_nrecs++;
+      }
+
+      // fill in sample length and number of records
       xdrInt(buf,sample_len_idx, i - sample_len_idx - 4);
+      xdrInt(buf,sample_nrecs_idx, sample_nrecs);
  
       return i;
    }
@@ -511,7 +534,7 @@ public final class SFlowValve extends ValveBase {
       if(agentAddress == null) return;
       if(dsIndex == -1) return;
 
-      byte[] buf = new byte[max_header_len + 4 + counter_data_len];
+      byte[] buf = new byte[max_header_len + 4 + max_counter_data_len];
 
       int i = 0;
 
