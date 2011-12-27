@@ -17,6 +17,21 @@ import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.HashMap;
+import java.util.List;
+import java.util.UUID;
+import java.lang.management.ManagementFactory;
+import java.lang.management.OperatingSystemMXBean;
+import java.lang.management.MemoryManagerMXBean;
+import java.lang.management.MemoryPoolMXBean;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.RuntimeMXBean;
+import java.lang.management.ThreadMXBean;
+import java.lang.management.MemoryMXBean;
+import java.lang.management.ClassLoadingMXBean;
+import java.lang.management.CompilationMXBean;
+import java.lang.management.MemoryUsage;
+import java.lang.instrument.Instrumentation;
 import javax.servlet.ServletException;
 
 import org.apache.catalina.valves.ValveBase;
@@ -45,6 +60,12 @@ public final class SFlowValve extends ValveBase {
    private static final int DEFAULT_SFLOW_PORT      = 6343; 
    private static final int DS_CLASS_PHYSICAL       = 2;
    private static final int DS_CLASS_LOGICAL        = 3;
+   private static final int OS_NAME_JAVA            = 13;
+   private static final int MACHINE_TYPE_UNKNOWN    = 0;
+   private static final int VIR_DOMAIN_RUNNING      = 1;
+
+   public static UUID myUUID        = null;
+   public static String myHostname  = null;
 
    private static long pollingInterval = 0L;
    private static byte[] agentAddress = null;
@@ -52,6 +73,34 @@ public final class SFlowValve extends ValveBase {
    private static int parentDsIndex = -1;
 
    private static DatagramSocket socket = null;
+
+   public static void uuid(UUID uuid) { myUUID = uuid; };
+   public static UUID uuid() {
+      if(myUUID != null) return myUUID;
+
+      String uuidStr = System.getProperty("sflow.uuid");
+      if(uuidStr != null) {
+        try { myUUID = UUID.fromString(uuidStr); }
+        catch(IllegalArgumentException e) { ; }
+      }
+      if(myUUID != null) return myUUID;
+
+      myUUID = new UUID(0L,0L); 
+      return myUUID;
+   }
+
+   public static void hostname(String hostname) { myHostname = hostname; }
+   public static String hostname() {
+      if(myHostname != null) return myHostname;
+
+      myHostname = System.getProperty("sflow.hostname");
+      if(myHostname != null) return myHostname;
+
+      //RuntimeMXBean runtimeMX = ManagementFactory.getRuntimeMXBean();
+      //myHostname = runtimeMX.getName();
+      myHostname = "apache-tomcat";
+      return myHostname;
+   }
 
    // update configuration
    private static synchronized void updateConfig() {
@@ -424,6 +473,15 @@ public final class SFlowValve extends ValveBase {
      return xdrBytes(buf,offset,bytes,pad,true);
    }
 
+    public static int xdrUUID(byte[] buf, int offset, UUID uuid) {
+	int i = offset;
+
+	i = xdrLong(buf,i,uuid.getMostSignificantBits());
+	i = xdrLong(buf,i,uuid.getLeastSignificantBits());  
+
+	return i;
+    }
+
    private static byte[] addressToBytes(String address) {
      if(address == null) return null;
 
@@ -480,7 +538,9 @@ public final class SFlowValve extends ValveBase {
       return i;
   }
 
-   static final int max_counter_data_len = 108;
+    private long totalThreadTime = 0L;
+    private HashMap<Long,Long> prevThreadCpuTime = null;
+   static final int max_counter_data_len = 512;
    // opaque = counter_data; enterprise = 0; format = 2201
    private int xdrCounterSample(byte[] buf, int offset) {
       int i = offset;
@@ -495,8 +555,177 @@ public final class SFlowValve extends ValveBase {
       int sample_nrecs = 0;
       i += 4;
 
-      i = xdrInt(buf,i,2201); // data format
+      // JVM Counters
+      RuntimeMXBean runtimeMX = ManagementFactory.getRuntimeMXBean();
+
+      String hostname = hostname();
+
+      UUID uuid = uuid();
+
+      String os_release = System.getProperty("java.version");
+      String vm_name = runtimeMX.getVmName();
+      String vm_vendor = runtimeMX.getVmVendor();
+      String vm_version = runtimeMX.getVmVersion();
+
+      List<GarbageCollectorMXBean> gcMXList = ManagementFactory.getGarbageCollectorMXBeans();
+      long gcCount = 0;
+      long gcTime = 0;
+      for(GarbageCollectorMXBean gcMX : gcMXList)  {
+        gcCount += gcMX.getCollectionCount();
+        gcTime += gcMX.getCollectionTime();
+      }
+
+      CompilationMXBean compilationMX = ManagementFactory.getCompilationMXBean();
+      long compilationTime = 0L;
+      if(compilationMX.isCompilationTimeMonitoringSupported()) {
+        compilationTime = compilationMX.getTotalCompilationTime();
+      }
+
+      long cpuTime = 0L;
+      ThreadMXBean threadMX = ManagementFactory.getThreadMXBean();
+      OperatingSystemMXBean osMX = ManagementFactory.getOperatingSystemMXBean();
+      if (osMX instanceof com.sun.management.OperatingSystemMXBean) {
+	  cpuTime = ((com.sun.management.OperatingSystemMXBean)osMX).getProcessCpuTime();
+	  cpuTime /= 1000000L;
+      } else {
+	  if(threadMX.isThreadCpuTimeEnabled()) {
+	      long[] ids = threadMX.getAllThreadIds();
+	      HashMap<Long,Long> threadCpuTime = new HashMap<Long,Long>();
+	      for(int t = 0; t < ids.length; t++) {
+		  long id = ids[t];
+		  if(id >= 0) {
+		      long threadtime = threadMX.getThreadCpuTime(id);
+		      if(threadtime >= 0) {
+			  threadCpuTime.put(id,threadtime);
+			  long prev = 0L;
+			  if(prevThreadCpuTime != null) {
+			      Long prevl = prevThreadCpuTime.get(id);
+			      if(prevl != null) prev = prevl.longValue();
+			  }
+			  if(prev <= threadtime) totalThreadTime += (threadtime - prev);
+			  else totalThreadTime += threadtime;
+		      }
+		  }
+	      }
+	      cpuTime = (totalThreadTime / 1000000L) + gcTime + compilationTime;
+              prevThreadCpuTime = threadCpuTime;
+	  }
+      }
+
+      MemoryMXBean memoryMX = ManagementFactory.getMemoryMXBean();
+      MemoryUsage heapMemory =  memoryMX.getHeapMemoryUsage();
+      MemoryUsage nonHeapMemory = memoryMX.getNonHeapMemoryUsage();
+   
+      int nrVirtCpu = osMX.getAvailableProcessors();
+
+      long memory = heapMemory.getCommitted() + nonHeapMemory.getCommitted();
+      long maxMemory = heapMemory.getMax() + nonHeapMemory.getCommitted(); 
+
+      ClassLoadingMXBean classLoadingMX = ManagementFactory.getClassLoadingMXBean();
+
+      long fd_open_count = 0L;
+      long fd_max_count = 0L;
+      if(osMX instanceof com.sun.management.UnixOperatingSystemMXBean) {
+         fd_open_count = ((com.sun.management.UnixOperatingSystemMXBean)osMX).getOpenFileDescriptorCount();
+         fd_max_count = ((com.sun.management.UnixOperatingSystemMXBean)osMX).getMaxFileDescriptorCount();
+      }
+
+      // host_descr
+      i = xdrInt(buf,i,2000);
       int opaque_len_idx = i;
+      i += 4;
+      i = xdrString(buf,i,hostname,64);
+      i = xdrUUID(buf,i,uuid);
+      i = xdrInt(buf,i,MACHINE_TYPE_UNKNOWN);
+      i = xdrInt(buf,i,OS_NAME_JAVA);
+      i = xdrString(buf,i,os_release,32);
+      xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+      sample_nrecs++;
+
+      // host_adapters
+      // i = xdrInt(buf,i,2001)
+      // Java does not create virtual network interfaces
+      // Note: sFlow sub-agent on host OS reports host network adapters
+
+      if(parentDsIndex > 0) {
+	 // host_parent
+	 i = xdrInt(buf,i,2002);
+         opaque_len_idx = i;
+         i += 4;
+	 i = xdrInt(buf,i,DS_CLASS_PHYSICAL);
+	 i = xdrInt(buf,i,parentDsIndex);
+         xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+         sample_nrecs++;
+      }
+
+      // virt_cpu
+      i = xdrInt(buf,i,2101);
+      opaque_len_idx = i;
+      i += 4; 
+      i = xdrInt(buf,i,VIR_DOMAIN_RUNNING);
+      i = xdrInt(buf,i,(int)cpuTime);
+      i = xdrInt(buf,i,nrVirtCpu);
+      xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+      sample_nrecs++;
+ 
+      // virt_memory
+      i = xdrInt(buf,i,2102);
+      opaque_len_idx = i;
+      i += 4;
+      i = xdrLong(buf,i,memory);
+      i = xdrLong(buf,i,maxMemory);
+      xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+      sample_nrecs++;
+
+      // virt_disk_io
+      // i = xdrInt(buf,i,2103);
+      // Currently no JMX bean providing JVM disk I/O stats
+      // Note: sFlow sub-agent on host OS provides overall disk I/O stats
+
+      // virt_net_io
+      // i = xdrInt(buf,i,2104);
+      // Currently no JMX bena providing JVM network I/O stats
+      // Note: sFlow sub-agent on host OS provides overall network I/O stats
+
+      // jvm_runtime
+      i = xdrInt(buf,i,2105);
+      opaque_len_idx = i;
+      i += 4;
+      i = xdrString(buf,i,vm_name,64);
+      i = xdrString(buf,i,vm_vendor,32);
+      i = xdrString(buf,i,vm_version,32);
+      xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+      sample_nrecs++;
+
+      // jvm_statistics
+      i = xdrInt(buf,i,2106);
+      opaque_len_idx = i;
+      i += 4;
+      i = xdrLong(buf,i,heapMemory.getInit());
+      i = xdrLong(buf,i,heapMemory.getUsed());
+      i = xdrLong(buf,i,heapMemory.getCommitted());
+      i = xdrLong(buf,i,heapMemory.getMax());
+      i = xdrLong(buf,i,nonHeapMemory.getInit());
+      i = xdrLong(buf,i,nonHeapMemory.getUsed());
+      i = xdrLong(buf,i,nonHeapMemory.getCommitted());
+      i = xdrLong(buf,i,nonHeapMemory.getMax());
+      i = xdrInt(buf,i,(int)gcCount);
+      i = xdrInt(buf,i,(int)gcTime);
+      i = xdrInt(buf,i,(int)classLoadingMX.getLoadedClassCount());
+      i = xdrInt(buf,i,(int)classLoadingMX.getTotalLoadedClassCount());
+      i = xdrInt(buf,i,(int)classLoadingMX.getUnloadedClassCount());
+      i = xdrInt(buf,i,(int)compilationTime);
+      i = xdrInt(buf,i,(int)threadMX.getThreadCount());
+      i = xdrInt(buf,i,(int)threadMX.getDaemonThreadCount());
+      i = xdrInt(buf,i,(int)threadMX.getTotalStartedThreadCount());
+      i = xdrInt(buf,i,(int)fd_open_count);
+      i = xdrInt(buf,i,(int)fd_max_count);
+      xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+      sample_nrecs++;
+
+      // HTTP counters
+      i = xdrInt(buf,i,2201);
+      opaque_len_idx = i;
       i += 4;
       i = xdrInt(buf,i,method_option_count.get());
       i = xdrInt(buf,i,method_get_count.get());
@@ -515,17 +744,6 @@ public final class SFlowValve extends ValveBase {
       i = xdrInt(buf,i,status_other_count.get());
       xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
       sample_nrecs++;
-
-      if(parentDsIndex > 0) {
-        // host_parent
-        i = xdrInt(buf,i,2002);
-        opaque_len_idx = i;
-        i += 4;
-        i = xdrInt(buf,i,DS_CLASS_PHYSICAL);
-        i = xdrInt(buf,i,parentDsIndex);
-        xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
-        sample_nrecs++;
-      }
 
       // fill in sample length and number of records
       xdrInt(buf,sample_len_idx, i - sample_len_idx - 4);
