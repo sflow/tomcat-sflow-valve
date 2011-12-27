@@ -275,7 +275,8 @@ public final class SFlowValve extends ValveBase {
          socketType = 6;
       }
 
-      long bytes = response.getBytesWritten(true);
+      long bytes_read = (request.getCoyoteRequest()).getBytesRead();
+      long bytes_written = response.getBytesWritten(true);
 
       String uri = request.getRequestURI();
  
@@ -285,6 +286,7 @@ public final class SFlowValve extends ValveBase {
       String referrer = request.getHeader("referer");
       String agent = request.getHeader("user-agent");
       String user = request.getRemoteUser();
+      String xff = request.getHeader("x-forwarded-for");
 
       String mimeType = null;
 
@@ -304,7 +306,7 @@ public final class SFlowValve extends ValveBase {
       int sample_nrecs = 0;
       i += 4;
 
-      i = xdrInt(buf,i,2201);      
+      i = xdrInt(buf,i,2206);      
       int opaque_len_idx = i;
       i += 4;
 
@@ -326,12 +328,14 @@ public final class SFlowValve extends ValveBase {
       i = xdrInt(buf,i,method_val);
       i = xdrInt(buf,i,protocol_val); 
       i = xdrString(buf,i,uri,255);
-      i = xdrString(buf,i,hostName,32);
+      i = xdrString(buf,i,hostName,64);
       i = xdrString(buf,i,referrer,255);
-      i = xdrString(buf,i,agent,64);
+      i = xdrString(buf,i,agent,128);
+      i = xdrString(buf,i,xff,64);
       i = xdrString(buf,i,user,32);
-      i = xdrString(buf,i,mimeType,32);
-      i = xdrLong(buf,i,bytes);
+      i = xdrString(buf,i,mimeType,64);
+      i = xdrLong(buf,i,bytes_read);
+      i = xdrLong(buf,i,bytes_written);
       i = xdrInt(buf,i,duration);
       i = xdrInt(buf,i,status);
       xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);

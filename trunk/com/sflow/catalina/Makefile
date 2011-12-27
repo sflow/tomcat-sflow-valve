@@ -2,7 +2,7 @@ JAVAC=javac
 JARC=jar
 OPT=-g -target 1.5 -source 1.5
  
-CLASSPATH='.:/usr/share/apache-tomcat-7.0.11/lib/catalina.jar:/usr/share/apache-tomcat-7.0.11/lib/servlet-api.jar'
+CLASSPATH='.:/usr/share/apache-tomcat-7.0.11/lib/catalina.jar:/usr/share/apache-tomcat-7.0.11/lib/servlet-api.jar:/usr/share/apache-tomcat-7.0.11/lib/tomcat-coyote.jar'
 JFLAGS= -classpath $(CLASSPATH)
  
 .SUFFIXES: .java .class
