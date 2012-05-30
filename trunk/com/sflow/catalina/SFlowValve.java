@@ -20,6 +20,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.HashMap;
 import java.util.List;
 import java.util.UUID;
+import java.util.Set;
 import java.lang.management.ManagementFactory;
 import java.lang.management.OperatingSystemMXBean;
 import java.lang.management.MemoryManagerMXBean;
@@ -32,6 +33,9 @@ import java.lang.management.ClassLoadingMXBean;
 import java.lang.management.CompilationMXBean;
 import java.lang.management.MemoryUsage;
 import java.lang.instrument.Instrumentation;
+import javax.management.MBeanServer;
+import javax.management.ObjectInstance;
+import javax.management.ObjectName;
 import javax.servlet.ServletException;
 
 import org.apache.catalina.valves.ValveBase;
@@ -744,6 +748,46 @@ public final class SFlowValve extends ValveBase {
       i = xdrInt(buf,i,status_other_count.get());
       xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
       sample_nrecs++;
+
+      // Worker pool
+      MBeanServer mbserver = ManagementFactory.getPlatformMBeanServer();
+      ObjectName oname;
+      try {
+	  oname = ObjectName.getInstance("Catalina:type=ThreadPool,*");
+          Set<ObjectInstance> mbeans = mbserver.queryMBeans(oname,null);
+
+	  // assume that only one connector is being used - pick pool with largest currentThreadCount
+          int workers_active = 0;
+          int workers_idle = 0;
+          int workers_max = 0;
+          int maxCurrentThreadCount = 0;
+          for(ObjectInstance oi : mbeans) {
+              oname = oi.getObjectName();
+	      Integer maxThreads = (Integer)mbserver.getAttribute(oname,"maxThreads");
+              Integer currentThreadCount = (Integer)mbserver.getAttribute(oname,"currentThreadCount");
+              Integer currentThreadsBusy = (Integer)mbserver.getAttribute(oname,"currentThreadsBusy");
+            
+              if(currentThreadCount != null && currentThreadCount.intValue() > maxCurrentThreadCount) {
+                  maxCurrentThreadCount = currentThreadCount.intValue();
+
+		  workers_active = currentThreadsBusy.intValue();
+                  workers_idle = currentThreadCount.intValue() - workers_active;
+                  workers_max = maxThreads.intValue();
+              }
+          }
+          if(maxCurrentThreadCount > 0) {
+	      i = xdrInt(buf,i,2206);
+              opaque_len_idx = i;
+              i += 4;
+              i = xdrInt(buf,i,workers_active);
+              i = xdrInt(buf,i,workers_idle);
+              i = xdrInt(buf,i,workers_max);
+              i = xdrInt(buf,i,0); // req_delayed
+              i = xdrInt(buf,i,0); // req_dropped
+	      xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
+	      sample_nrecs++;
+          }
+      } catch(Exception e) {;}
 
       // fill in sample length and number of records
       xdrInt(buf,sample_len_idx, i - sample_len_idx - 4);
