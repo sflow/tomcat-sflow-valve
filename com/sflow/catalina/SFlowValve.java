@@ -782,8 +782,8 @@ public final class SFlowValve extends ValveBase {
               i = xdrInt(buf,i,workers_active);
               i = xdrInt(buf,i,workers_idle);
               i = xdrInt(buf,i,workers_max);
-              i = xdrInt(buf,i,0); // req_delayed
-              i = xdrInt(buf,i,0); // req_dropped
+              i = xdrInt(buf,i,-1); // req_delayed
+              i = xdrInt(buf,i,-1); // req_dropped
 	      xdrInt(buf,opaque_len_idx, i - opaque_len_idx - 4);
 	      sample_nrecs++;
           }
