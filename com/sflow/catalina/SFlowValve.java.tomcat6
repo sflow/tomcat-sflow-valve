@@ -498,7 +498,7 @@ public final class SFlowValve extends ValveBase implements Lifecycle {
    }
 
    private static byte[] stringToBytes(String string, int maxLen) {
-     CharsetEncoder enc = Charset.forName("US-ASCII").newEncoder();
+     CharsetEncoder enc = Charset.forName("UTF8").newEncoder();
      enc.onMalformedInput(CodingErrorAction.REPORT);
      enc.onUnmappableCharacter(CodingErrorAction.REPLACE);
      byte[] bytes = null;
@@ -586,7 +586,9 @@ public final class SFlowValve extends ValveBase implements Lifecycle {
       long cpuTime = 0L;
       ThreadMXBean threadMX = ManagementFactory.getThreadMXBean();
       OperatingSystemMXBean osMX = ManagementFactory.getOperatingSystemMXBean();
-      if (osMX instanceof com.sun.management.OperatingSystemMXBean) {
+      String className = osMX.getClass().getName();
+      if ("com.sun.management.OperatingSystem".equals(className)
+           || "com.sun.management.UnixOperatingSystem".equals(className)) {
 	  cpuTime = ((com.sun.management.OperatingSystemMXBean)osMX).getProcessCpuTime();
 	  cpuTime /= 1000000L;
       } else {
@@ -627,7 +629,7 @@ public final class SFlowValve extends ValveBase implements Lifecycle {
 
       long fd_open_count = 0L;
       long fd_max_count = 0L;
-      if(osMX instanceof com.sun.management.UnixOperatingSystemMXBean) {
+      if("com.sun.management.UnixOperatingSystem".equals(className)) {
          fd_open_count = ((com.sun.management.UnixOperatingSystemMXBean)osMX).getOpenFileDescriptorCount();
          fd_max_count = ((com.sun.management.UnixOperatingSystemMXBean)osMX).getMaxFileDescriptorCount();
       }
