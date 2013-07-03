@@ -588,7 +588,9 @@ public final class SFlowValve extends ValveBase {
       long cpuTime = 0L;
       ThreadMXBean threadMX = ManagementFactory.getThreadMXBean();
       OperatingSystemMXBean osMX = ManagementFactory.getOperatingSystemMXBean();
-      if (osMX instanceof com.sun.management.OperatingSystemMXBean) {
+      String className = osMX.getClass().getName();
+      if ("com.sun.management.OperatingSystem".equals(className)
+           || "com.sun.management.UnixOperatingSystem".equals(className)) {
 	  cpuTime = ((com.sun.management.OperatingSystemMXBean)osMX).getProcessCpuTime();
 	  cpuTime /= 1000000L;
       } else {
@@ -629,7 +631,7 @@ public final class SFlowValve extends ValveBase {
 
       long fd_open_count = 0L;
       long fd_max_count = 0L;
-      if(osMX instanceof com.sun.management.UnixOperatingSystemMXBean) {
+      if("com.sun.management.UnixOperatingSystem".equals(className)) {
          fd_open_count = ((com.sun.management.UnixOperatingSystemMXBean)osMX).getOpenFileDescriptorCount();
          fd_max_count = ((com.sun.management.UnixOperatingSystemMXBean)osMX).getMaxFileDescriptorCount();
       }
