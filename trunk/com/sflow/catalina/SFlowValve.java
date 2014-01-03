@@ -78,6 +78,16 @@ public final class SFlowValve extends ValveBase {
 
    private static DatagramSocket socket = null;
 
+   public static int dsIndex() {
+      int dsIndex = -1;
+      String indexStr = System.getProperty("sflow.dsindex");
+      if(indexStr != null) {
+        try { dsIndex = Integer.parseInt(indexStr); }
+        catch(NumberFormatException e) { ; }
+      }
+      return dsIndex;
+   }
+
    public static void uuid(UUID uuid) { myUUID = uuid; };
    public static UUID uuid() {
       if(myUUID != null) return myUUID;
@@ -227,7 +237,7 @@ public final class SFlowValve extends ValveBase {
      return (int) x;
    }
 
-   private int dsIndex = -1;
+   private int dsIndex = dsIndex();
    private int agentSequenceNo = 0;
    private int counterSequenceNo = 0;
    private int flowSequenceNo = 0;
